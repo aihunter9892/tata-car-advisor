@@ -1,3 +1,11 @@
+# Ignore local env files containing secrets
+.env
+
+# Python cache
+__pycache__/
+
+# Virtual environment
+.venv/
 # Python
 __pycache__/
 *.pyc

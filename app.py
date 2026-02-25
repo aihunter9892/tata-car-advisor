@@ -54,14 +54,16 @@ def load_aws_secrets(
 
     Requirements:
       - boto3 in requirements.txt
-      - AppRunnerCarRAGRole must have secretsmanager:GetSecretValue permission
+      - TataCarAdvisorRole must have secretsmanager:GetSecretValue permission
       - Secret ARN: arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n
-            { "GEMINI_API_KEY": "...", "GROQ_API_KEY": "..." }
+        containing: { "GEMINI_API_KEY": "...", "GROQ_API_KEY": "..." }
     """
     try:
         import boto3
         client  = boto3.client("secretsmanager", region_name=region)
-        payload = client.get_secret_value(SecretId="arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n")
+        payload = client.get_secret_value(
+            SecretId="arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n"
+        )
         secrets = json.loads(payload["SecretString"])
 
         injected = []
@@ -78,7 +80,7 @@ def load_aws_secrets(
         print(f"  ℹ️  Secrets Manager skipped ({type(e).__name__}) — using .env")
 
 
-# ── Step 2: Load from Secrets Manager (AWS) or fall through to .env ──
+# ── Step 2: Load secrets (AWS) or fall through to .env (local) ──
 load_aws_secrets()
 
 
@@ -92,7 +94,6 @@ app = Flask(__name__, static_folder="static")
 CORS(app)
 
 # ── Initialise agents once at startup ───────────────────────────
-# Keys now come from Secrets Manager (AWS) or .env (local) — same code either way
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
 
@@ -126,40 +127,56 @@ print("═" * 52 + "\n")
 # ════════════════════════════════════════
 #  GUARDRAIL — Competitor Brand Filter
 #  Hard block before LLM is called (zero API cost)
+#
+#  ⚠️  IMPORTANT: Only use BRAND names here, never
+#  common English words like "city", "venue", "jazz"
+#  that appear in normal Tata-related queries.
 # ════════════════════════════════════════
 COMPETITOR_BRANDS = {
-    # Maruti Suzuki
-    "maruti", "suzuki", "swift", "baleno", "brezza", "ertiga",
+    # Maruti Suzuki — brand + model names that are unique enough
+    "maruti", "suzuki", "baleno", "brezza", "ertiga",
     "wagon r", "alto", "dzire", "vitara", "fronx", "jimny",
-    # Hyundai / Kia
-    "hyundai", "kia", "creta", "venue", "i20", "i10",
-    "grand i10", "verna", "tucson", "sonet", "seltos", "carens",
-    # Honda
-    "honda", "city", "amaze", "elevate", "jazz",
+    # NOTE: "swift" removed — too common in sentences like "swift decision"
+    # NOTE: "city" removed — conflicts with "Mumbai city drive" queries
+
+    # Hyundai / Kia — brand names only, avoid generic model names
+    "hyundai", "kia", "creta", "i20 hatchback", "grand i10",
+    "verna sedan", "tucson", "sonet", "seltos", "carens",
+
+    # Honda — brand only, "city" and "jazz" removed (common words)
+    "honda", "honda amaze", "honda elevate",
+
     # Mahindra
-    "mahindra", "scorpio", "thar", "xuv", "bolero",
+    "mahindra", "scorpio", "thar", "xuv700", "xuv400", "bolero",
+
     # Toyota
     "toyota", "innova", "fortuner", "urban cruiser", "hyryder",
-    # Others
-    "mg", "morris garages", "hector", "astor", "gloster",
-    "volkswagen", "vw", "taigun", "virtus",
+
+    # Others — unique brand/model names only
+    "mg motor", "morris garages", "mg hector", "mg astor", "mg gloster",
+    "volkswagen", " vw ", "taigun", "virtus",
     "skoda", "kushaq", "slavia",
     "renault", "kiger", "triber",
     "nissan", "magnite",
-    "jeep", "compass", "meridian",
-    "ford", "bmw", "mercedes", "audi", "volvo",
-    "citroen", "peugeot", "ola electric", "ather",
+    "jeep compass", "jeep meridian",
+    "ford",
+    "bmw", "mercedes benz", "mercedes-benz", "audi",
+    "volvo", "citroen", "peugeot",
 }
 
 def check_competitor_mention(query: str) -> str | None:
     """
     Returns a polite refusal if a competitor brand is detected,
     or None if the query is clean and should go to the agent.
+
+    Uses whole-word / phrase matching to avoid false positives
+    on common words like 'city', 'venue', 'jazz'.
     """
     query_lower = query.lower()
     for brand in COMPETITOR_BRANDS:
         if brand in query_lower:
-            display_name = brand.title()
+            # Clean up display name
+            display_name = brand.strip().title()
             print(f"  [GUARDRAIL] Blocked competitor mention: '{brand}'")
             return (
                 f"I'm your dedicated Tata Motors advisor and I'm not able to "

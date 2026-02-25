@@ -4,6 +4,8 @@ runtime: python311
 
 build:
   commands:
+    pre-build:
+      - pip install --upgrade pip setuptools wheel
     build:
       - pip install -r requirements.txt
 
@@ -13,7 +15,5 @@ run:
   network:
     port: 8080
   env:
-    # DO NOT put real keys here — add them in App Runner console
-    # under "Environment variables" during service setup
     - name: PYTHONUNBUFFERED
       value: "1"

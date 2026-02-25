@@ -1,0 +1,9 @@
+# apprunner.yaml — entire AWS config in 8 lines
+build:
+  commands:
+    build:
+      - pip install -r requirements.txt
+run:
+  command: gunicorn app:app --bind 0.0.0.0:8080 --workers 2 --timeout 120
+  network:
+    port: 8080

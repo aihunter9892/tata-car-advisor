@@ -16,20 +16,71 @@ Routes:
     GET  /api/status       → Gemini + Groq health check
     POST /api/chat         → run agentic loop (auto-fallback)
     POST /api/filter       → filter cars without AI (sidebar search)
+
+Secret loading priority:
+    1. AWS Secrets Manager  (when running on App Runner)
+    2. .env file            (local development)
 """
 
 import os
+import json
 import time
 from datetime import datetime
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+# ── Step 1: Load .env for local dev ─────────────────────────────
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
+
+
+# ════════════════════════════════════════
+#  AWS SECRETS MANAGER LOADER
+#  Runs at startup — silently skipped in local dev
+# ════════════════════════════════════════
+def load_aws_secrets(
+    secret_name: str = "tata-car-advisor",
+    region:      str = "us-east-1"
+) -> None:
+    """
+    Fetch API keys from AWS Secrets Manager and inject into os.environ.
+
+    On App Runner  → loads GEMINI_API_KEY and GROQ_API_KEY from the secret.
+    On local dev   → boto3 has no credentials, catches exception, uses .env instead.
+
+    Requirements:
+      - boto3 in requirements.txt
+      - AppRunnerCarRAGRole must have secretsmanager:GetSecretValue permission
+      - Secret ARN: arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n
+            { "GEMINI_API_KEY": "...", "GROQ_API_KEY": "..." }
+    """
+    try:
+        import boto3
+        client  = boto3.client("secretsmanager", region_name=region)
+        payload = client.get_secret_value(SecretId="arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n")
+        secrets = json.loads(payload["SecretString"])
+
+        injected = []
+        for key, value in secrets.items():
+            os.environ[key] = value
+            injected.append(key)
+
+        print(f"  ✅ Secrets Manager: loaded {injected}")
+
+    except ImportError:
+        print("  ℹ️  boto3 not installed — skipping Secrets Manager")
+    except Exception as e:
+        # On local machine: "Unable to locate credentials" — expected, not an error
+        print(f"  ℹ️  Secrets Manager skipped ({type(e).__name__}) — using .env")
+
+
+# ── Step 2: Load from Secrets Manager (AWS) or fall through to .env ──
+load_aws_secrets()
+
 
 # ── Import our modules ──────────────────────────────────────────
 from agents import GeminiAgent, GroqAgent, run_agent
@@ -41,6 +92,7 @@ app = Flask(__name__, static_folder="static")
 CORS(app)
 
 # ── Initialise agents once at startup ───────────────────────────
+# Keys now come from Secrets Manager (AWS) or .env (local) — same code either way
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
 
@@ -73,11 +125,8 @@ print("═" * 52 + "\n")
 
 # ════════════════════════════════════════
 #  GUARDRAIL — Competitor Brand Filter
-#  Layer 1: Hard block before LLM is called
-#  (zero API cost, fully deterministic)
+#  Hard block before LLM is called (zero API cost)
 # ════════════════════════════════════════
-
-# Add/remove brands here as needed
 COMPETITOR_BRANDS = {
     # Maruti Suzuki
     "maruti", "suzuki", "swift", "baleno", "brezza", "ertiga",
@@ -89,7 +138,7 @@ COMPETITOR_BRANDS = {
     "honda", "city", "amaze", "elevate", "jazz",
     # Mahindra
     "mahindra", "scorpio", "thar", "xuv", "bolero",
-    # Toyota / Suzuki joint
+    # Toyota
     "toyota", "innova", "fortuner", "urban cruiser", "hyryder",
     # Others
     "mg", "morris garages", "hector", "astor", "gloster",
@@ -104,29 +153,23 @@ COMPETITOR_BRANDS = {
 
 def check_competitor_mention(query: str) -> str | None:
     """
-    Scan the query for any competitor brand keyword.
-
-    Returns a polite refusal string if a competitor is detected,
-    or None if the query is clean and should proceed to the agent.
-
-    This runs BEFORE the LLM — no API tokens consumed on blocked queries.
+    Returns a polite refusal if a competitor brand is detected,
+    or None if the query is clean and should go to the agent.
     """
     query_lower = query.lower()
-
     for brand in COMPETITOR_BRANDS:
         if brand in query_lower:
-            # Capitalise the matched brand nicely for the response
             display_name = brand.title()
-            print(f"  [GUARDRAIL] Blocked competitor mention: '{brand}' in query")
+            print(f"  [GUARDRAIL] Blocked competitor mention: '{brand}'")
             return (
                 f"I'm your dedicated Tata Motors advisor and I'm not able to "
                 f"compare with or advise on {display_name} vehicles. "
-                f"For {display_name} models, their official website or a multi-brand "
-                f"platform like CarDekho would be a better resource.\n\n"
-                f"What I *can* do is help you find the best Tata car that fits your "
-                f"needs — just share your city, budget, and how you plan to use the car!"
+                f"For {display_name} models, their official website or a platform "
+                f"like CarDekho would be a better resource.\n\n"
+                f"What I *can* do is help you find the best Tata car for your needs "
+                f"— just share your city, budget, and how you plan to use the car!"
             )
-    return None   # query is clean
+    return None
 
 
 # ════════════════════════════════════════
@@ -152,7 +195,6 @@ def api_status():
 
     if gemini_agent:
         try:
-            # Cheap ping — single token response
             gemini_agent.client.models.generate_content(
                 model=gemini_agent.MODEL,
                 contents="ping"
@@ -194,8 +236,7 @@ def chat():
     if not query:
         return jsonify({"error": "query is required"}), 400
 
-    # ── Layer 1 Guardrail: block competitor brand questions ──────
-    # Runs before the LLM — zero API cost, instant response
+    # ── Guardrail: block competitor brand questions ──────────────
     refusal = check_competitor_mention(query)
     if refusal:
         return jsonify({
@@ -206,7 +247,6 @@ def chat():
             "fallback_used":   False,
             "elapsed_seconds": 0.0,
         })
-    # ────────────────────────────────────────────────────────────
 
     t0     = time.time()
     result = run_agent(
@@ -235,10 +275,6 @@ def filter_cars():
     """
     Filter cars without AI — pure database lookup.
     Used by the sidebar Search button.
-
-    Request JSON:
-        { "budget_min": 8.0, "budget_max": 16.0,
-          "fuel": "Petrol", "seats": 4 }
     """
     d      = request.json or {}
     result = get_tata_cars(

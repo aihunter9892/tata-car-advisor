@@ -1,21 +1,14 @@
 """
 app.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Thin Flask server. No business logic here —
-it just wires the HTTP layer to agents.py and tools.py.
-
-Run:
-    pip install -r requirements.txt
-    cp .env.example .env   # add your API keys
-    python app.py
-
-Open: http://localhost:8080
+Thin Flask server — wires HTTP layer to agents.py and tools.py.
+No guardrails. All queries go directly to the AI agents.
 
 Routes:
-    GET  /                 → index.html
-    GET  /api/status       → Gemini + Groq health check
-    POST /api/chat         → run agentic loop (auto-fallback)
-    POST /api/filter       → filter cars without AI (sidebar search)
+    GET  /              → index.html
+    GET  /api/status    → Gemini + Groq health check
+    POST /api/chat      → run agentic loop (auto-fallback)
+    POST /api/filter    → filter cars without AI (sidebar search)
 
 Secret loading priority:
     1. AWS Secrets Manager  (when running on App Runner)
@@ -30,7 +23,7 @@ from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-# ── Step 1: Load .env for local dev ─────────────────────────────
+# ── Load .env for local dev ──────────────────────────────────────
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -40,7 +33,6 @@ except ImportError:
 
 # ════════════════════════════════════════
 #  AWS SECRETS MANAGER LOADER
-#  Runs at startup — silently skipped in local dev
 # ════════════════════════════════════════
 def load_aws_secrets(
     secret_name: str = "tata-car-advisor",
@@ -48,15 +40,7 @@ def load_aws_secrets(
 ) -> None:
     """
     Fetch API keys from AWS Secrets Manager and inject into os.environ.
-
-    On App Runner  → loads GEMINI_API_KEY and GROQ_API_KEY from the secret.
-    On local dev   → boto3 has no credentials, catches exception, uses .env instead.
-
-    Requirements:
-      - boto3 in requirements.txt
-      - TataCarAdvisorRole must have secretsmanager:GetSecretValue permission
-      - Secret ARN: arn:aws:secretsmanager:us-east-1:998191239514:secret:tata-car-advisor
-        containing: { "GEMINI_API_KEY": "...", "GROQ_API_KEY": "..." }
+    Silently skipped on local dev (no AWS credentials available).
     """
     try:
         import boto3
@@ -64,36 +48,30 @@ def load_aws_secrets(
         payload = client.get_secret_value(
             SecretId="arn:aws:secretsmanager:us-east-1:998191239514:secret:tata-car-advisor"
         )
-        secrets = json.loads(payload["SecretString"])
-
+        secrets  = json.loads(payload["SecretString"])
         injected = []
         for key, value in secrets.items():
             os.environ[key] = value
             injected.append(key)
-
         print(f"  ✅ Secrets Manager: loaded {injected}")
 
     except ImportError:
         print("  ℹ️  boto3 not installed — skipping Secrets Manager")
     except Exception as e:
-        # On local machine: "Unable to locate credentials" — expected, not an error
         print(f"  ℹ️  Secrets Manager skipped ({type(e).__name__}) — using .env")
 
 
-# ── Step 2: Load secrets (AWS) or fall through to .env (local) ──
 load_aws_secrets()
 
-
-# ── Import our modules ──────────────────────────────────────────
-from agents import GeminiAgent, GroqAgent, run_agent
-from tools  import get_tata_cars
+# ── Import modules ───────────────────────────────────────────────
+from agents   import GeminiAgent, GroqAgent, run_agent
+from tools    import get_tata_cars
 from database import TATA_CARS_DB
 
-# ── App setup ───────────────────────────────────────────────────
+# ── App setup ────────────────────────────────────────────────────
 app = Flask(__name__, static_folder="static")
 CORS(app)
 
-# ── Initialise agents once at startup ───────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
 
@@ -125,71 +103,6 @@ print("═" * 52 + "\n")
 
 
 # ════════════════════════════════════════
-#  GUARDRAIL — Competitor Brand Filter
-#  Hard block before LLM is called (zero API cost)
-#
-#  ⚠️  IMPORTANT: Only use BRAND names here, never
-#  common English words like "city", "venue", "jazz"
-#  that appear in normal Tata-related queries.
-# ════════════════════════════════════════
-COMPETITOR_BRANDS = {
-    # Maruti Suzuki — brand + model names that are unique enough
-    "maruti", "suzuki", "baleno", "brezza", "ertiga",
-    "wagon r", "alto", "dzire", "vitara", "fronx", "jimny",
-    # NOTE: "swift" removed — too common in sentences like "swift decision"
-    # NOTE: "city" removed — conflicts with "Mumbai city drive" queries
-
-    # Hyundai / Kia — brand names only, avoid generic model names
-    "hyundai", "kia", "creta", "i20 hatchback", "grand i10",
-    "verna sedan", "tucson", "sonet", "seltos", "carens",
-
-    # Honda — brand only, "city" and "jazz" removed (common words)
-    "honda", "honda amaze", "honda elevate",
-
-    # Mahindra
-    "mahindra", "scorpio", "thar", "xuv700", "xuv400", "bolero",
-
-    # Toyota
-    "toyota", "innova", "fortuner", "urban cruiser", "hyryder",
-
-    # Others — unique brand/model names only
-    "mg motor", "morris garages", "mg hector", "mg astor", "mg gloster",
-    "volkswagen", " vw ", "taigun", "virtus",
-    "skoda", "kushaq", "slavia",
-    "renault", "kiger", "triber",
-    "nissan", "magnite",
-    "jeep compass", "jeep meridian",
-    "ford",
-    "bmw", "mercedes benz", "mercedes-benz", "audi",
-    "volvo", "citroen", "peugeot",
-}
-
-def check_competitor_mention(query: str) -> str | None:
-    """
-    Returns a polite refusal if a competitor brand is detected,
-    or None if the query is clean and should go to the agent.
-
-    Uses whole-word / phrase matching to avoid false positives
-    on common words like 'city', 'venue', 'jazz'.
-    """
-    query_lower = query.lower()
-    for brand in COMPETITOR_BRANDS:
-        if brand in query_lower:
-            # Clean up display name
-            display_name = brand.strip().title()
-            print(f"  [GUARDRAIL] Blocked competitor mention: '{brand}'")
-            return (
-                f"I'm your dedicated Tata Motors advisor and I'm not able to "
-                f"compare with or advise on {display_name} vehicles. "
-                f"For {display_name} models, their official website or a platform "
-                f"like CarDekho would be a better resource.\n\n"
-                f"What I *can* do is help you find the best Tata car for your needs "
-                f"— just share your city, budget, and how you plan to use the car!"
-            )
-    return None
-
-
-# ════════════════════════════════════════
 #  ROUTES
 # ════════════════════════════════════════
 
@@ -200,10 +113,7 @@ def index():
 
 @app.route("/api/status")
 def api_status():
-    """
-    Check which AI providers are live right now.
-    Called by the frontend every 25 seconds to update the status pills.
-    """
+    """Health check — returns which AI providers are live."""
     out = {
         "gemini":    False,
         "groq":      False,
@@ -244,7 +154,7 @@ def chat():
 
     Response JSON:
         { "answer": "...", "tool_log": [...], "model": "...",
-          "provider": "gemini|groq|guardrail", "fallback_used": bool,
+          "provider": "gemini|groq", "fallback_used": bool,
           "elapsed_seconds": float }
     """
     data  = request.json or {}
@@ -252,18 +162,6 @@ def chat():
 
     if not query:
         return jsonify({"error": "query is required"}), 400
-
-    # ── Guardrail: block competitor brand questions ──────────────
-    refusal = check_competitor_mention(query)
-    if refusal:
-        return jsonify({
-            "answer":          refusal,
-            "tool_log":        [],
-            "model":           "guardrail",
-            "provider":        "guardrail",
-            "fallback_used":   False,
-            "elapsed_seconds": 0.0,
-        })
 
     t0     = time.time()
     result = run_agent(
@@ -289,10 +187,7 @@ def chat():
 
 @app.route("/api/filter", methods=["POST"])
 def filter_cars():
-    """
-    Filter cars without AI — pure database lookup.
-    Used by the sidebar Search button.
-    """
+    """Filter cars without AI — pure database lookup for sidebar search."""
     d      = request.json or {}
     result = get_tata_cars(
         budget_min_lakhs = float(d.get("budget_min", 0)),

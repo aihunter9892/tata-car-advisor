@@ -1126,7 +1126,7 @@ input[type="range"]::-moz-range-thumb {
   </div>
 
   <div class="topbar-divider"></div>
-  <span class="topbar-product">Agentic AI · Skillopedia</span>
+  <span class="topbar-product">Agentic AI · UpGrad KnowledgeHut</span>
 
   <!-- Live API Status -->
   <div class="topbar-status">
@@ -1311,7 +1311,7 @@ input[type="range"]::-moz-range-thumb {
 
 <script>
 // ════════════════════════════════════════════════════════════════
-const API = 'http://localhost:5000/api';
+const API = window.location.origin + '/api'; // auto-detects localhost vs AWS
 let forceGroq = false;
 let busy      = false;
 

@@ -9,7 +9,7 @@ Run:
     cp .env.example .env   # add your API keys
     python app.py
 
-Open: http://localhost:5000
+Open: http://localhost:8080
 
 Routes:
     GET  /                 → index.html
@@ -119,7 +119,7 @@ if GROQ_API_KEY and GROQ_API_KEY != "YOUR_GROQ_API_KEY_HERE":
 else:
     print("  ⚠️  GROQ_API_KEY not set — Groq disabled")
 
-print(f"\n  Open: http://localhost:5000")
+print(f"\n  Open: http://localhost:8080")
 print("═" * 52 + "\n")
 
 
@@ -290,4 +290,4 @@ def filter_cars():
 #  RUN
 # ════════════════════════════════════════
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=8080)

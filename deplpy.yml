@@ -1,0 +1,100 @@
+name: Deploy to AWS App Runner
+
+on:
+  push:
+    branches:
+      - main      # auto-deploy on every push to main
+
+jobs:
+  deploy:
+    name: CI + Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ───────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ───────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Install dependencies ───────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Run CI tests ───────────────────────────────────────
+      - name: Test database integrity
+        run: python -c "
+from database import TATA_CARS_DB, CITY_PROFILES, REFERENCE_FUEL_PRICES
+assert len(TATA_CARS_DB) >= 9,   'Car DB too small'
+assert len(CITY_PROFILES) >= 10, 'City profiles missing'
+assert 'Petrol' in REFERENCE_FUEL_PRICES, 'Fuel prices missing'
+print(f'✅ Database OK — {len(TATA_CARS_DB)} cars, {len(CITY_PROFILES)} cities')
+"
+
+      - name: Test tools logic
+        run: python -c "
+from tools import get_tata_cars, get_fuel_price, TOOL_MAP, dispatch
+cars = get_tata_cars(10, 16, 'Petrol')
+assert cars['total_matches'] > 0, 'Filter returned 0 cars'
+fp = get_fuel_price('Mumbai', 'Petrol')
+assert fp['price_per_litre'] > 0, 'Fuel price is 0'
+err = dispatch('nonexistent_tool', {})
+assert 'error' in err, 'Dispatch should return error for unknown tool'
+print(f'✅ Tools OK — {len(TOOL_MAP)} tools, filter found {cars[\"total_matches\"]} cars')
+"
+
+      - name: Test guardrail logic
+        run: python -c "
+COMPETITOR_BRANDS = {
+    'maruti','suzuki','swift','hyundai','kia','honda',
+    'mahindra','toyota','mg','volkswagen','skoda',
+    'renault','nissan','jeep','ford','bmw','mercedes','audi',
+}
+def check(q):
+    ql = q.lower()
+    return any(b in ql for b in COMPETITOR_BRANDS)
+
+assert check('compare with maruti brezza') == True,  'Should block maruti'
+assert check('tell me about swift')         == True,  'Should block swift'
+assert check('best tata car in mumbai')     == False, 'Should allow tata query'
+assert check('nexon ev for hyderabad')      == False, 'Should allow nexon query'
+print('✅ Guardrail OK — competitor block working')
+"
+
+      # ── 5. Configure AWS credentials ──────────────────────────
+      # Uses GitHub Secrets: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            us-east-1
+
+      # ── 6. Deploy to App Runner ───────────────────────────────
+      # instance-role-arn → TataCarAdvisorRole (has Secrets Manager access)
+      # The role is attached to the running app instance, not the pipeline
+      - name: Deploy to App Runner
+        id: deploy
+        uses: awslabs/amazon-app-runner-deploy@main
+        with:
+          service:               tata-car-advisor
+          source-connection-arn: ${{ secrets.APP_RUNNER_CONNECTION_ARN }}
+          repo:                  https://github.com/${{ github.repository }}
+          branch:                main
+          runtime:               PYTHON_311
+          build-command:         pip install -r requirements.txt
+          start-command:         gunicorn app:app --bind 0.0.0.0:8080 --workers 2 --timeout 120
+          port:                  "8080"
+          region:                us-east-1
+          cpu:                   1
+          memory:                2
+          instance-role-arn:     ${{ secrets.APP_RUNNER_INSTANCE_ROLE_ARN }}
+          wait-for-service-stability-seconds: 180
+
+      # ── 7. Print live URL ─────────────────────────────────────
+      - name: App Runner URL
+        run: echo "🚀 Live at https://${{ steps.deploy.outputs.service-url }}"

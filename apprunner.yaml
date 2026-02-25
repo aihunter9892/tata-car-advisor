@@ -1,5 +1,4 @@
 version: 1.0
-
 runtime: python311
 
 build:
@@ -9,9 +8,6 @@ build:
       - python3 -m pip install -r requirements.txt --no-cache-dir
 
 run:
-  command: python3 -m gunicorn app:app --bind 0.0.0.0:8080 --workers 2 --timeout 120
+  command: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
   network:
     port: 8080
-  env:
-    - name: PYTHONUNBUFFERED
-      value: "1"

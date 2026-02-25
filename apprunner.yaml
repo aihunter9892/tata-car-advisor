@@ -5,9 +5,9 @@ runtime: python311
 build:
   commands:
     pre-build:
-      - pip install --upgrade pip setuptools wheel
+      - pip install --upgrade pip==24.0 setuptools==69.5.1 wheel==0.43.0
     build:
-      - pip install -r requirements.txt
+      - pip install -r requirements.txt --no-cache-dir
 
 run:
   runtime-version: "3.11"

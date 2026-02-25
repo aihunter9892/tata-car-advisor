@@ -55,14 +55,14 @@ def load_aws_secrets(
     Requirements:
       - boto3 in requirements.txt
       - TataCarAdvisorRole must have secretsmanager:GetSecretValue permission
-      - Secret ARN: arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n
+      - Secret ARN: arn:aws:secretsmanager:us-east-1:998191239514:secret:tata-car-advisor
         containing: { "GEMINI_API_KEY": "...", "GROQ_API_KEY": "..." }
     """
     try:
         import boto3
         client  = boto3.client("secretsmanager", region_name=region)
         payload = client.get_secret_value(
-            SecretId="arn:aws:secretsmanager:us-east-1:998191239514:secret:car-rag/production-7gqr2n"
+            SecretId="arn:aws:secretsmanager:us-east-1:998191239514:secret:tata-car-advisor"
         )
         secrets = json.loads(payload["SecretString"])
 
